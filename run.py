@@ -6,10 +6,13 @@ import time
 import uuid
 import base64
 import aiohttp
+import os
 from datetime import datetime
 from colorama import init, Fore, Style
 from websockets_proxy import Proxy, proxy_connect
+from dotenv import load_dotenv
 
+load_dotenv()
 init(autoreset=True)
 
 BANNER = """
@@ -66,13 +69,26 @@ def colorful_log(proxy, device_id, message_type, message_content, is_sent=False,
     
     print(log_message)
 
-async def connect_to_wss(socks5_proxy, user_id, mode):
-    device_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, socks5_proxy))
+async def connect_to_wss(http_proxy, user_id, mode):
+    # Parse proxy string to extract credentials if present
+    # Expected format: http://username:password@ip:port
+    proxy_parts = http_proxy.split('@')
+    if len(proxy_parts) == 2:
+        auth_part, proxy_part = proxy_parts
+        proxy_url = f"http://{proxy_part}"
+        # Remove 'http://' from auth_part
+        auth = auth_part.replace('http://', '')
+        username, password = auth.split(':')
+    else:
+        proxy_url = http_proxy
+        username = password = None
+
+    device_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, http_proxy))
     
     random_user_agent = random.choice(EDGE_USERAGENTS)
     
     colorful_log(
-        proxy=socks5_proxy,  
+        proxy=http_proxy,  
         device_id=device_id, 
         message_type="INITIALIZATION", 
         message_content=f"User Agent: {random_user_agent}",
@@ -105,7 +121,10 @@ async def connect_to_wss(socks5_proxy, user_id, mode):
             ]
             uri = random.choice(urilist)
             server_hostname = "proxy.wynd.network"
-            proxy = Proxy.from_url(socks5_proxy)
+            proxy = Proxy.from_url(http_proxy)
+            if username and password:
+                proxy.username = username
+                proxy.password = password
             
             async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
                                      extra_headers=custom_headers) as websocket:
@@ -113,13 +132,13 @@ async def connect_to_wss(socks5_proxy, user_id, mode):
                     while True:
                         if has_received_action:
                             send_message = json.dumps(
-                                {"id": str(uuid.uuid5(uuid.NAMESPACE_DNS, socks5_proxy)), 
+                                {"id": str(uuid.uuid5(uuid.NAMESPACE_DNS, http_proxy)), 
                                  "version": "1.0.0", 
                                  "action": "PING", 
                                  "data": {}})
                             
                             colorful_log(
-                                proxy=socks5_proxy,  
+                                proxy=http_proxy,  
                                 device_id=device_id, 
                                 message_type="SENDING PING", 
                                 message_content=send_message,
@@ -136,7 +155,7 @@ async def connect_to_wss(socks5_proxy, user_id, mode):
                 while True:
                     if is_authenticated and not has_received_action:
                         colorful_log(
-                            proxy=socks5_proxy,
+                            proxy=http_proxy,
                             device_id=device_id,
                             message_type="AUTHENTICATED | WAIT UNTIL THE PING GATE OPENS",
                             message_content="Waiting for " + ("HTTP_REQUEST" if mode == "extension" else "OPEN_TUNNEL"),
@@ -147,7 +166,7 @@ async def connect_to_wss(socks5_proxy, user_id, mode):
                     message = json.loads(response)
                     
                     colorful_log(
-                        proxy=socks5_proxy, 
+                        proxy=http_proxy, 
                         device_id=device_id, 
                         message_type="RECEIVED", 
                         message_content=json.dumps(message),
@@ -172,7 +191,7 @@ async def connect_to_wss(socks5_proxy, user_id, mode):
                             auth_response["result"]["extension_id"] = "lkbnfiajjmbhnfledhphioinpickokdi"
                         
                         colorful_log(
-                            proxy=socks5_proxy,  
+                            proxy=http_proxy,  
                             device_id=device_id, 
                             message_type="AUTHENTICATING", 
                             message_content=json.dumps(auth_response),
@@ -212,7 +231,7 @@ async def connect_to_wss(socks5_proxy, user_id, mode):
                                 }
                                 
                                 colorful_log(
-                                    proxy=socks5_proxy,
+                                    proxy=http_proxy,
                                     device_id=device_id,
                                     message_type="OPENING PING ACCESS",
                                     message_content=json.dumps(http_response),
@@ -226,7 +245,7 @@ async def connect_to_wss(socks5_proxy, user_id, mode):
                         pong_response = {"id": message["id"], "origin_action": "PONG"}
                         
                         colorful_log(
-                            proxy=socks5_proxy, 
+                            proxy=http_proxy, 
                             device_id=device_id, 
                             message_type="SENDING PONG", 
                             message_content=json.dumps(pong_response),
@@ -238,7 +257,7 @@ async def connect_to_wss(socks5_proxy, user_id, mode):
                         
         except Exception as e:
             colorful_log(
-                proxy=socks5_proxy, 
+                proxy=http_proxy, 
                 device_id=device_id, 
                 message_type="ERROR", 
                 message_content=str(e),
@@ -250,23 +269,22 @@ async def main():
     print(f"{Fore.CYAN}{BANNER}{Style.RESET_ALL}")
     print(f"{Fore.CYAN}IM-Hanzou | GetGrass Crooter V2{Style.RESET_ALL}")
     
-    print(f"{Fore.GREEN}Select Mode:{Style.RESET_ALL}")
-    print("1. Extension Mode")
-    print("2. Desktop Mode")
+    mode = "extension"  # Default to extension mode
+    print(f"{Fore.GREEN}Running in extension mode{Style.RESET_ALL}")
     
-    while True:
-        mode_choice = input("Enter your choice (1/2): ").strip()
-        if mode_choice in ['1', '2']:
-            break
-        print(f"{Fore.RED}Invalid choice. Please enter 1 or 2.{Style.RESET_ALL}")
+    # Read user_id from .env
+    _user_id = os.getenv('USER_ID')
+    if not _user_id:
+        print(f"{Fore.RED}Error: USER_ID not found in .env file{Style.RESET_ALL}")
+        return
     
-    mode = "extension" if mode_choice == "1" else "desktop"
-    print(f"{Fore.GREEN}Selected mode: {mode}{Style.RESET_ALL}")
-    
-    _user_id = input('Please Enter your user ID: ')
-    
-    with open('proxy_list.txt', 'r') as file:
-        local_proxies = file.read().splitlines()
+    # Read proxies from .env
+    proxies_str = os.getenv('PROXY_LIST')
+    if not proxies_str:
+        print(f"{Fore.RED}Error: PROXY_LIST not found in .env file{Style.RESET_ALL}")
+        return
+        
+    local_proxies = [proxy.strip() for proxy in proxies_str.split(',')]
     
     print(f"{Fore.YELLOW}Total Proxies: {len(local_proxies)}{Style.RESET_ALL}")
     
